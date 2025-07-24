@@ -14,7 +14,7 @@ The code is written in R notebook format and can be run in RStudio. It demonstra
 **Getting Started**
 
 	Download and open the R notebook files in RStudio.
-	You can control the number of replications and iterations by modifying the parameters in the last row of both files.
+	You can control the number of replications and iterations by modifying the parameters in the last row of all algorithm files.
 	Example: trials(Replication, Iteration, Time length)
 	Replication: Number of replications to run
 	Iteration: Number of iterations per replication
