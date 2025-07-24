@@ -1,0 +1,513 @@
+ 
+```{r}
+count_identifiable_first <- function(id_list) {
+  num_iters <- length(id_list[[1]][[1]])
+  identifiable_count <- rep(0, num_iters)
+  
+  for (i in seq_along(id_list)) {
+    id_vector_list <- id_list[[i]][[1]]
+    id_flag <- rep(0, num_iters)
+    
+    for (j in 2:num_iters) {
+      if (min(id_vector_list[[j]]) == 1 && min(id_vector_list[[j - 1]]) == 1) {
+        id_flag[j] <- 1
+      }
+    }
+    
+    # Find the first such j and count it
+    first_j <- which(id_flag == 1)[1]
+    if (!is.na(first_j)) {
+      identifiable_count[first_j] <- identifiable_count[first_j] + 1
+    }
+  }
+  
+  return(identifiable_count)
+}
+count_identifiable <- function(id_list) {
+  num_iters <- length(id_list[[1]][[1]])  
+  identifiable_count <- rep(0, num_iters)  
+
+  for (i in seq_along(id_list)) {
+    id_vector_list <- id_list[[i]][[1]]   
+    id_flag <- rep(0, num_iters)   
+ 
+    for (j in 2:num_iters) {
+      if (min(id_vector_list[[j]]) == 1 && min(id_vector_list[[j - 1]]) == 1) {
+        id_flag[j] <- 1
+      }
+    }
+    identifiable_count <- identifiable_count + id_flag
+  }
+
+  return(identifiable_count)
+}
+count_identifiable_with_location <- function(id_list,location_list) {
+  location_count = c()
+  num_iters <- length(id_list[[1]][[1]])  
+  identifiable_count <- rep(0, num_iters)  
+
+  for (i in seq_along(id_list)) {
+    id_vector_list <- id_list[[i]][[1]]   
+    location_vector = location_list[i,2:50] #exclude the starting point
+    id_flag <- rep(0, num_iters)  
+    for (j in 2:num_iters) {
+      if (min(id_vector_list[[j]]) == 1) {
+        id_flag[j] <- 1
+      }
+      else{
+        location_count = c(location_count,location_vector[j])
+      }
+    }
+    identifiable_count <- identifiable_count + id_flag
+  }
+
+  return (list(identifiable_count,location_count))
+}
+count_identifiable_with_location_heatmap = function(id_list, location_list) {
+  num_iters = length(id_list[[1]][[1]])  
+  
+  Iteration_list = c()
+  Location_list = c()
+
+  for (i in seq_along(id_list)) {
+    id_vector_list = id_list[[i]][[1]]   
+    
+    location_vector = as.numeric(location_list[i, 2:51]) # flatten to numeric vector
+
+    for (j in 2:num_iters) {
+      if (min(id_vector_list[[j]]) != 1) {
+        Iteration_list = c(Iteration_list, j)
+        Location_list = c(Location_list, location_vector[j])
+      }
+    }
+  }
+  
+  data_records = data.frame(Iteration = Iteration_list, Location = Location_list)
+  return(data_records)
+}
+```
+ 
+```{r}
+MU_M = c(0.1, 50)
+K_D = c(0.0001, 1)
+Yield_C = c(0.01, 10)
+load("/Users/liuxiaolu/Desktop/New paper data/range60/1DBG/1DEALPIPE.RData")
+
+EALPIPE = milly
+
+
+load("/Users/liuxiaolu/Desktop/New paper data/range60/1DBG/random1D(v2).RData")
+random = milly
+ 
+
+load("/Users/liuxiaolu/Desktop/New paper data/range60/1DBG/1Dbenchmark!.RData")
+benchmark = milly
+
+ 
+
+id_prob_EALPIPE=(count_identifiable(EALPIPE[[4]]))/30
+
+id_prob_random=(count_identifiable(random[[4]]))/30
+
+id_prob_benchmark=(count_identifiable(benchmark[[4]]))/30
+
+
+```
+
+```{r}
+heat_ealpipe = count_identifiable_with_location_heatmap(EALPIPE[[4]], EALPIPE[[3]])
+heat_benchmark = count_identifiable_with_location_heatmap(benchmark[[4]], benchmark[[3]])
+heat_random = count_identifiable_with_location_heatmap(random[[4]], random[[3]]) 
+ 
+heat_ealpipe$Method = "E-ALPIPE"
+heat_benchmark$Method = "Benchmark"
+heat_random$Method = "Random"
+ 
+ 
+all_heat_data = rbind(heat_ealpipe, heat_benchmark, heat_random)
+ 
+library(ggplot2)
+ 
+ggplot(all_heat_data, aes(x = Iteration, y = Location)) +
+  geom_bin2d(binwidth = c(2, 2)) +   
+  facet_wrap(~ Method, ncol = 2, scales = "fixed") +
+  scale_fill_gradient(low = "#fee5d9", high = "#a50f15") +  # 更深更稳重的红
+  labs(title = "Choice of Selection: Experiment 2",
+       x = "Iteration", y = "Time", fill = "Count") +
+  theme_minimal(base_size = 14) +
+  theme(legend.position = "right",plot.title = element_text(hjust = 0.5))
+```
+
+
+
+```{r}
+# Load necessary libraries
+library(ggplot2)
+library(tidyr)
+
+# Create data frame for plotting
+iterations <- seq_along(id_prob_EALPIPE)
+
+# Combine data into a data frame
+plot_data <- data.frame(
+  Iteration = iterations,
+  EALPIPE = id_prob_EALPIPE,
+  Benchmark=id_prob_benchmark,
+  Random = id_prob_random
+)
+
+plot_data_long <- pivot_longer(plot_data, cols = c("EALPIPE","Benchmark","Random"), 
+                               names_to = "Method", values_to = "Probability")
+
+
+ggplot(plot_data_long, aes(x = Iteration+1, y = Probability, color = Method)) +
+  geom_line(linewidth = 1) +  # Updated size to linewidth
+  geom_point(size = 3) +  # Optional, to add points on the lines
+  labs(
+    title = "Identifiability Probability: EALPIPE vs Benchmark vs Random",
+    x = "Number of data points",
+    y = "Identifiability Probability"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c(7,3,5)) +  # Set colors manually
+  coord_cartesian(xlim = c(1, 51)) +
+  theme(
+    legend.position = "bottom",  # Place the legend at the bottom
+    plot.title = element_text(hjust = 0.5)  # Center the title
+  )
+
+```
+
+
+```{r}
+count_identifiable_first <- function(id_list) {
+  num_iters <- length(id_list[[1]][[1]])
+  identifiable_count <- rep(0, num_iters)
+  
+  for (i in seq_along(id_list)) {
+    id_vector_list <- id_list[[i]][[1]]
+    id_flag <- rep(0, num_iters)
+    
+    for (j in 2:num_iters) {
+      if (min(id_vector_list[[j]]) == 1 && min(id_vector_list[[j - 1]]) == 1) {
+        id_flag[j] <- 1
+      }
+    }
+    
+    # Find the first such j and count it
+    first_j <- which(id_flag == 1)[1]
+    if (!is.na(first_j)) {
+      identifiable_count[first_j] <- identifiable_count[first_j] + 1
+    }
+  }
+  
+  return(identifiable_count)
+}
+
+ 
+first_id_list_EALPIPE =count_identifiable_first(EALPIPE[[4]])  
+locational_sum = 0
+for (i in 1:length(first_id_list_EALPIPE)){
+  locational_sum = locational_sum+ i*first_id_list_EALPIPE[i]
+}
+locational_sum=locational_sum+(30-sum(first_id_list_EALPIPE))*50
+locational_sum/30  
+
+
+first_id_list_benchmark =count_identifiable_first(benchmark[[4]])  
+locational_sum = 0
+for (i in 1:length(first_id_list_EALPIPE)){
+  locational_sum = locational_sum+ i*first_id_list_benchmark[i]
+}
+locational_sum=locational_sum+(30-sum(first_id_list_benchmark))*50
+locational_sum/30 
+ 
+
+
+first_id_list_random = count_identifiable_first(random[[4]])
+locational_sum = 0
+for (i in 1:length(first_id_list_random)){
+  locational_sum = locational_sum+ i*first_id_list_random[i]
+}
+locational_sum=locational_sum+(30-sum(first_id_list_random))*50
+locational_sum/30 
+
+```
+
+Test
+```{r} 
+expand_to_iteration_vec = function(first_id_list, penalty = 50) {
+  result = rep(1:length(first_id_list), times = first_id_list)
+  not_found = 30 - sum(first_id_list)
+  c(result, rep(penalty, not_found))
+}
+ 
+first_id_list_EALPIPE = count_identifiable_first(EALPIPE[[4]])
+first_id_list_benchmark = count_identifiable_first(benchmark[[4]])
+first_id_list_random = count_identifiable_first(random[[4]])
+
+v_eal = expand_to_iteration_vec(first_id_list_EALPIPE)
+v_bench = expand_to_iteration_vec(first_id_list_benchmark)
+v_random = expand_to_iteration_vec(first_id_list_random)
+ 
+df_first = data.frame(
+  Iteration = c(v_eal, v_bench, v_random),
+  Method = rep(c("E-ALPIPE", "Benchmark", "Random"), each = 30)
+)
+ 
+kruskal_result = kruskal.test(Iteration ~ Method, data = df_first)
+print(kruskal_result)
+ 
+wilcox_result = pairwise.wilcox.test(
+  x = df_first$Iteration,
+  g = df_first$Method
+)
+print(wilcox_result)
+
+```
+
+
+Data at 20
+```{r}
+load("/Users/liuxiaolu/Desktop/New paper data/1DStop20/EALPIPE,Stop20.RData")
+
+EALPIPE = milly
+
+load("/Users/liuxiaolu/Desktop/New paper data/1DStop20/random1DStop20.RData")
+random = milly
+ 
+
+load("/Users/liuxiaolu/Desktop/New paper data/1DStop20/1DbenchmarkStop20.RData")
+benchmark = milly
+
+library(deSolve)
+ 
+true_function <- function(times, info = c(1,0.1 ,0.5)) {
+  MU_M = info[1]
+  K_D = info[2]
+  Yield_C = info[3]
+  bacmodel=function(t,states,param){
+    with(as.list(c(states,param)),{
+      dBG = ((MU_M*SC)/(30+SC))*BG-K_D*BG;
+      dSC = -(1/Yield_C)*((MU_M*SC)/(30+SC))*BG;
+      list(c(dBG,dSC))
+    })
+  }
+  states <- c(BG = 1, SC = 30)
+ param=c( MU_M=MU_M ,K_D=K_D, Yield_C=Yield_C)  
+  ode(y = states, times = times, func = bacmodel, parms = param)
+}
+
+
+
+times <- seq(1, 60, 0.5) 
+
+true_values <- true_function(times)
+true_BG <- true_values[, "BG"]
+pred_BG = true_function(times,c(0.7554878,0.1018992, 0.5414045))[,"BG"]
+
+```
+
+
+
+
+
+
+
+
+```{r}
+realisation_means = function(point_estimates) {
+  
+  num_trials <- length(point_estimates)
+  num_iters  <- length(point_estimates[[1]][[1]])
+  
+  # Initialize the array to store differences
+  difference_array <- array(NA, dim = c(num_trials, 1))
+  
+  for (i in seq_len(num_trials)) {
+#    for (j in seq_len(num_iters)) {
+    j = 20
+      theta <- point_estimates[[i]][[1]][[j]]
+      pred_BG <- true_function(times, theta)[,"BG"]
+      difference_array[i, 1] <- mean(abs(true_BG - pred_BG))
+      #print(sum(abs(true_BG - pred_BG)))
+#    }
+  }
+  BG_means <- colMeans(difference_array, na.rm = TRUE)
+  BG_se    <- apply(difference_array, 2, sd, na.rm = TRUE) / sqrt(num_trials)
+  
+  return(list(BG_means = BG_means, BG_se = BG_se))
+}
+
+unlist(realisation_means(EALPIPE[[1]]))
+unlist(realisation_means(benchmark[[1]]))
+unlist(realisation_means(random[[1]]))
+```
+
+ 
+test
+```{r}
+realisation_diff_BG = function(point_estimates) {
+  num_trials = length(point_estimates)
+  target_iter = 20  # 21st iteration
+  
+  BG_diff = numeric(num_trials)
+  
+  for (i in seq_len(num_trials)) {
+    theta = point_estimates[[i]][[1]][[target_iter]]
+    pred_BG = true_function(times, theta)[,"BG"]
+    BG_diff[i] = mean(abs(true_BG - pred_BG))
+  }
+  
+  return(BG_diff)
+}
+
+# Get differences for the selected three methods
+bg_eal = realisation_diff_BG(EALPIPE[[1]])
+bg_bench = realisation_diff_BG(benchmark[[1]])
+bg_rand = realisation_diff_BG(random[[1]])
+
+# Construct the dataframe
+df_bg = data.frame(
+  Method = rep(c("E-ALPIPE", "Benchmark", "Random"), 
+               times = c(length(bg_eal), length(bg_bench), length(bg_rand))),
+  Diff = c(bg_eal, bg_bench, bg_rand)
+)
+
+# Kruskal-Wallis test
+kruskal_result = kruskal.test(Diff ~ Method, data = df_bg)
+print(kruskal_result)
+
+# Pairwise Wilcoxon test with Holm adjustment
+wilcox_result = pairwise.wilcox.test(
+  x = df_bg$Diff,
+  g = df_bg$Method,
+  p.adjust.method = "holm"
+)
+print(wilcox_result)
+```
+
+
+```{r}
+CI_difference = function(milly_4, milly_5, placeholder_values = c(49.9, 0.9999, 9.99)) {
+  
+  placeholder_values <- rep_len(placeholder_values, 3)
+  
+  last_iter_mat = matrix(placeholder_values, nrow = length(milly_4), ncol = 3, byrow = TRUE)
+  
+  for (i in seq_along(milly_4)) {
+    indic_list = milly_4[[i]][[1]]
+    ci_list    = milly_5[[i]][[1]]
+    
+    j = 20  # only look at the 20th iteration
+    if (length(indic_list) < j || is.null(ci_list[[j]])) next
+    
+    flags = indic_list[[j]]
+    
+    for (k in 1:3) {
+      valid = !is.na(flags[k]) && flags[k] == 1
+      ci_row = ci_list[[j]]
+      if (valid && !is.na(ci_row[k, "closest_upper"]) && !is.na(ci_row[k, "closest_lower"])) {
+        last_iter_mat[i, k] = ci_row[k, "closest_upper"] - ci_row[k, "closest_lower"]
+      }
+    }
+  }
+  
+  avg = colMeans(last_iter_mat, na.rm = TRUE)
+  se  = apply(last_iter_mat, 2, sd, na.rm = TRUE) / sqrt(nrow(last_iter_mat))
+  
+  return(list(mean = avg, se = se))
+}
+CI_difference(EALPIPE[[4]],EALPIPE[[5]])
+CI_difference(benchmark[[4]],benchmark[[5]])
+
+
+CI_difference_random = function(milly_4, milly_5, placeholder_values = c(49.9, 0.9999, 9.99)) {
+  
+  placeholder_values <- rep_len(placeholder_values, 3)
+  
+  last_iter_mat = matrix(placeholder_values, nrow = length(milly_4), ncol = 3, byrow = TRUE)
+  
+  for (i in seq_along(milly_4)) {
+    indic_list = milly_4[[i]][[1]]
+    ci_list    = milly_5[[i]][[1]]
+    
+    j = 1  # only look at the 20th iteration
+    if (length(indic_list) < j || is.null(ci_list[[j]])) next
+    
+    flags = indic_list[[j]]
+    
+    for (k in 1:3) {
+      valid = !is.na(flags[k]) && flags[k] == 1
+      ci_row = ci_list[[j]]
+      if (valid && !is.na(ci_row[k, "closest_upper"]) && !is.na(ci_row[k, "closest_lower"])) {
+        last_iter_mat[i, k] = ci_row[k, "closest_upper"] - ci_row[k, "closest_lower"]
+      }
+    }
+  }
+  
+  avg = colMeans(last_iter_mat, na.rm = TRUE)
+  se  = apply(last_iter_mat, 2, sd, na.rm = TRUE) / sqrt(nrow(last_iter_mat))
+  
+  return(list(mean = avg, se = se))
+}
+
+CI_difference_random(random[[4]],random[[5]])
+
+```
+Test
+```{r}
+CI_raw = function(milly_4, milly_5, placeholder_values = c(49.9, 0.9999, 9.99), iter = 20) {
+  placeholder_values = rep_len(placeholder_values, 3)
+  last_iter_mat = matrix(placeholder_values, nrow = length(milly_4), ncol = 3, byrow = TRUE)
+
+  for (i in seq_along(milly_4)) {
+    indic_list = milly_4[[i]][[1]]
+    ci_list = milly_5[[i]][[1]]
+    if (length(indic_list) < iter || is.null(ci_list[[iter]])) next
+    flags = indic_list[[iter]]
+
+    for (k in 1:3) {
+      valid = !is.na(flags[k]) && flags[k] == 1
+      ci_row = ci_list[[iter]]
+      if (valid && !is.na(ci_row[k, "closest_upper"]) && !is.na(ci_row[k, "closest_lower"])) {
+        last_iter_mat[i, k] = ci_row[k, "closest_upper"] - ci_row[k, "closest_lower"]
+      }
+    }
+  }
+
+  as.data.frame(last_iter_mat)
+}
+
+# Run for 3 methods only
+raw_eal = CI_raw(EALPIPE[[4]], EALPIPE[[5]])
+raw_bench = CI_raw(benchmark[[4]], benchmark[[5]])
+raw_rand = CI_raw(random[[4]], random[[5]], iter = 1)
+
+# Combine all data into long format
+param_names = c("mu_Max", "K_D", "Yield_C")
+df_all = rbind(
+  data.frame(Method = "E-ALPIPE", raw_eal),
+  data.frame(Method = "Benchmark", raw_bench),
+  data.frame(Method = "Random", raw_rand)
+)
+
+# Reshape into long format
+df_long = tidyr::pivot_longer(df_all, cols = starts_with("V"), names_to = "Param", values_to = "CI")
+df_long$Param = factor(df_long$Param, labels = param_names)
+
+# Kruskal-Wallis + Wilcoxon pairwise test (Holm)
+for (p in param_names) {
+  cat("==== Wilcoxon Analysis for", p, "====\n")
+  df_p = dplyr::filter(df_long, Param == p)
+
+  kruskal_res = kruskal.test(CI ~ Method, data = df_p)
+  print(kruskal_res)
+
+  pairwise_res = pairwise.wilcox.test(df_p$CI, df_p$Method, p.adjust.method = "holm")
+  print(pairwise_res)
+  cat("\n\n")
+}
+```
+
+ 

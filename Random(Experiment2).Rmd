@@ -1,0 +1,533 @@
+For random selection
+In line 433, to control the number of starting points, and only need to run 1 iter if only want the final result for point estimate etc.
+If want complete result, set N = 1 at line 433, and run for the same number of iterations as the other methods
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(MASS)
+library(stats)
+library(purrr)
+library(truncnorm)
+library(posterior)
+library(deSolve)
+library(bayestestR)
+library(coda)
+
+noise_BG= 2
+
+MU_M = c(0.1,50)
+K_D = c(0.0001,1)
+Yield_C = c(0.01,10)
+param_matrix=matrix(c(MU_M[1],K_D[1],Yield_C[1],MU_M[2],K_D[2],Yield_C[2]),nrow=1,byrow=FALSE)
+```
+Define function
+```{r}
+
+original_function = function(T_2, MU_M,K_D, Yield_C) {
+  param=c( MU_M=MU_M, K_D=K_D, Yield_C=Yield_C)  
+  states=c(BG=1, SC=30)
+  bacmodel=function(t,states,param){
+    with(as.list(c(states,param)),{
+      dBG = ((MU_M*SC)/(30+SC))*BG-K_D*BG;
+      dSC = -(1/Yield_C)*((MU_M*SC)/(30+SC))*BG;
+      list(c(dBG,dSC))
+    })
+  }
+  times=c(0,T_2)
+  simu=ode(y=states,times=times,func = bacmodel,parms = param)
+  return(simu[2,2])  
+}
+
+
+original_function_vec= function(T_2_vec, MU_M, K_D, Yield_C) {
+
+  param  = c(MU_M = MU_M, K_D = K_D, Yield_C = Yield_C)
+  states = c(BG = 1, SC = 30)
+
+  bacmodel = function(t, states, param) {
+    with(as.list(c(states, param)), {
+      dBG = ((MU_M * SC) / (30 + SC)) * BG - K_D * BG
+      dSC = -(1 / Yield_C) * ((MU_M * SC) / (30 + SC)) * BG
+      list(c(dBG, dSC))
+    })
+  }
+
+  times = sort(c(0, T_2_vec))
+  simu  = ode(y = states, times = times, func = bacmodel, parms = param)
+
+  out = data.frame(time = simu[, "time"],
+                   BG   = simu[, "BG"],
+                   row.names = NULL)
+  return(out)
+}
+
+
+similar_function = function(info, time_length = 60) {
+
+  n_samples = nrow(info)
+  unique_T2 = seq(1, time_length, 0.5)
+  n_T2      = length(unique_T2)
+
+  BG_mat = matrix(NA_real_, nrow = n_samples, ncol = n_T2)
+
+  for (i in seq_len(n_samples)) {
+
+    states = c(BG = 1, SC = 30)
+    param  = c(MU_M    = info$MU_M[i],
+               K_D     = info$K_D[i],
+               Yield_C = info$Yield_C[i])
+
+    bacmodel = function(t, states, param) {
+      with(as.list(c(states, param)), {
+        dBG = ((MU_M * SC) / (30 + SC)) * BG - K_D * BG
+        dSC = -(1 / Yield_C) * ((MU_M * SC) / (30 + SC)) * BG
+        list(c(dBG, dSC))
+      })
+    }
+
+    times = c(0, unique_T2)
+    simu  = ode(y = states, times = times, func = bacmodel, parms = param)
+    BG_i  = simu[-1, "BG"]          
+
+    BG_mat[i, ] = BG_i
+  }
+
+  BG_df = as.data.frame(BG_mat)
+  colnames(BG_df) = paste0("T2_", unique_T2)
+  return(BG_df)
+}
+
+
+update_repeat_dict = function(contain_index_pairs, existing_dict) {
+  if (is.null(existing_dict)) {
+    existing_dict = list()
+  }
+  for (pair in contain_index_pairs) {
+    key = paste(pair, collapse = "_")
+    if (!is.null(existing_dict[[key]])) {
+      existing_dict[[key]] = existing_dict[[key]] + 1
+    } else {
+      existing_dict[[key]] = 1
+    }
+  }
+  return(existing_dict)
+}
+
+generate_obs = function(T2_values, seed, repeated_dict, noise_1=noise_BG ) {
+  key = paste(T2_values, collapse = "_") 
+  repeated_times = repeated_dict[[key]]
+  if (is.null(repeated_times)) {
+    stop("Counting error, does not exist in the dictionary")
+  }
+  seed = 30*seed +sum(unlist(repeated_dict))
+  set.seed(seed)
+  obss=original_function(T2_values, 1, 0.1,  0.5) #here idx_pair consists only of the idx for T_2
+  obs1 =obss[1]+ rtruncnorm(1,a=-obss[1],b=Inf, mean = 0, sd = noise_1)
+  return(list(obs1))
+}
+```
+
+Search for MLE  
+```{r}
+negative_log_likelihood_profile <- function(parameters,obs1,T_2, noise_1,  fixed_param  = NULL, param_index  = NULL)    
+{
+ 
+  if (!is.null(fixed_param) && !is.null(param_index)) {
+    full_params               <- numeric(3)
+    full_params[param_index]  <- fixed_param
+    full_params[-param_index] <- parameters         
+  } else {
+    full_params <- parameters
+  }
+ 
+  if (any(!is.finite(full_params))) return(1e6)
+  if (noise_1 <= 0 || !is.finite(noise_1)) return(1e6)
+
+  MU_M     <- full_params[1]
+  K_D      <- full_params[2]
+  Yield_C  <- full_params[3]
+
+  
+  simu <- tryCatch(
+    original_function_vec(T_2, MU_M, K_D, Yield_C),
+    error = function(e) NA
+  )
+  if (anyNA(simu))                          return(1e6)
+
+  matched_rows <- match(T_2, simu$time)
+  if (anyNA(matched_rows))                  return(1e6)
+
+  pred_BG <- simu$BG[matched_rows]
+  pred_BG <- pmax(pred_BG, 1e-8)            
+ 
+  likelihood <- tryCatch(
+    dtruncnorm(obs1, a = 0, b = Inf, mean = pred_BG, sd = noise_1),
+    error = function(e) rep(1e-10, length(obs1))
+  )
+  likelihood[likelihood <= 0 | is.na(likelihood)] <- 1e-10
+ 
+  nll <- -sum(log(likelihood))
+  if (!is.finite(nll)) nll <- 1e6
+  nll
+}
+
+```
+
+
+Discretisation
+```{r}
+single_pid=function(LBs,UBs){
+  check_vector = ifelse(is.na(LBs) | is.na(UBs), 0, 1)
+  return(check_vector)
+}
+
+common_optim_settings = list(
+  method = "L-BFGS-B",
+  noise_1 = noise_BG,
+  control = list(maxit = 1000)   
+)
+
+
+compute_profile_likelihood = function(fix_param_value, init_params,fix_idx) {
+  settings = list(
+    par = init_params, 
+    fn = negative_log_likelihood_profile,
+    obs1 = y_1,
+    T_2 = T_2,
+    fixed_param = fix_param_value, 
+    param_index = fix_idx,  
+    lower = params_matrix[1, 1:3][-fix_idx],  
+    upper = params_matrix[1, 4:6][-fix_idx]   
+  )
+  pl = do.call(optim, modifyList(common_optim_settings, settings)) 
+  neglog_lik = pl$value # negloglik
+  optimized_two = pl$par
+  optimized_params = numeric(length(init_params) + 1)
+  optimized_params[-fix_idx] = optimized_two  
+  optimized_params[fix_idx] = fix_param_value    
+  
+  return(list(neglog_lik = neglog_lik, optimized_params = optimized_params))
+}
+
+
+id_check_together = function(f, MLE, tol, initial_param, LB, UB, threshold, fix_idx, prev_bound=NULL) {
+  # Check parameter boundaries
+  pl_LB = f(LB, initial_param, fix_idx)$neglog_lik
+  pl_UB = f(UB, initial_param, fix_idx)$neglog_lik
+  
+  min_pt = numeric(length(initial_param) + 1)
+  min_pt[-fix_idx] = initial_param
+  min_pt[fix_idx] = MLE
+  min_pl = threshold - qchisq(0.95, 1) / 2
+  
+  if ((pl_LB < threshold || pl_UB < threshold)) {
+    cat("Not identifiable for parameter", fix_idx, "\n")
+    cat("Threshold:",threshold,"L pl:",pl_LB,"U pl:",pl_UB,"\n")
+    return(check_result = 0)
+  }
+  return(check_result = 1)
+}
+
+bound_search_ci = function(f, MLE, tol, initial_param, LB, UB, id_indicator,threshold, fix_idx, prev_bound=NULL,max_iter = 50) {
+  # Check parameter boundaries
+  pl_LB = f(LB, initial_param, fix_idx)$neglog_lik
+  pl_UB = f(UB, initial_param, fix_idx)$neglog_lik
+
+  min_pt = numeric(length(initial_param) + 1)
+  min_pt[-fix_idx] = initial_param
+  min_pt[fix_idx] = MLE
+  min_pl = threshold - qchisq(0.95, 1) / 2
+  
+  if (id_indicator[fix_idx]==0) {
+    if (fix_idx == 2) {
+      cat("pl opt:", min_pl, "bounds values", pl_LB, "and ", pl_UB, "thres", threshold, "\n")
+    }
+    return(list(closest_lower = NA, closest_upper = NA, iterations_lower = NA, iterations_upper = NA, best_pl = min_pl, update_MLE = min_pt))
+  }
+  search_points = data.frame(point = numeric(0), value = numeric(0), region = character(0))
+  # Bisection search for the lower interval
+  lower = LB
+  upper = MLE
+  iter = 0
+  
+  while (abs(upper - lower) > tol && iter < max_iter) {
+    mid = (lower + upper) / 2
+    pl_mid = f(mid, initial_param, fix_idx)$neglog_lik
+    search_points = rbind(search_points, data.frame(point = mid, value = pl_mid, region = "lower"))
+
+    if (abs(pl_mid - threshold) < min_pl) {
+      min_pl = abs(pl_mid - threshold)
+      min_pt[fix_idx] = mid
+    }
+    if (pl_mid < threshold) {
+      upper = mid
+    } else {
+      lower = mid
+    }
+    iter = iter + 1
+  }
+  
+  if (iter == 0) {
+      cat(sprintf("Loop did not execute: Using initial mid. MLE=%s ", MLE ))
+      closest_lower=(LB+MLE)/2
+    } else {
+      closest_lower = mid
+    }
+  iter_lower=iter
+  # Bisection search for the upper interval
+  lower = MLE
+  upper = UB
+  iter = 0
+  while (abs(upper - lower) > tol && iter < max_iter) {
+    mid = (lower + upper) / 2
+    pl_mid = f(mid, initial_param, fix_idx)$neglog_lik
+    search_points = rbind(search_points, data.frame(point = mid, value = pl_mid, region = "upper"))
+
+    if (abs(pl_mid - threshold) < min_pl) {
+      min_pl = abs(pl_mid - threshold)
+      min_pt[fix_idx] = mid
+    }
+    if (pl_mid < threshold) {
+      lower = mid
+    } else {
+      upper = mid
+    }
+    iter = iter + 1
+  }
+  if (iter == 0) {
+      cat(sprintf("Loop did not execute: Using initial mid. MLE=%s", MLE))
+      closest_upper=(UB+MLE)/2
+  } else {
+      closest_upper = mid
+  }
+  return(list(closest_lower = closest_lower, closest_upper = closest_upper, iterations_lower = iter_lower, iterations_upper = iter, update_MLE = min_pt, best_pl = min_pl))
+}
+
+```
+
+Joint work: update_functions (identifiability) 
+```{r}
+library(purrr)
+update_functions_id = function(y_1, N, T_2, num_points,prev_MLE=c(2, 0.2,  1),prev_opt = NULL,
+                               previous_model=NULL,prev_bound=NULL,params_matrix=param_matrix){ 
+  params_matrix<<-params_matrix
+  y_1 <<- y_1
+  T_2 <<- T_2
+  unique_T2 = seq(1,num_points,0.5)
+  lowerbound = params_matrix[1,1:3]
+  upperbound = params_matrix[1,4:6]
+  colnames(params_matrix) = c("MU_ML", "K_DL", "Yield_CL", "MU_MU","K_DU", "Yield_CU")
+  func_df = list()
+  planalysis = list() 
+  i = 1
+  starts = list(prev_MLE,c(prev_MLE[1], 1,   1),c(prev_MLE[1], 0.0001, 1),c(prev_MLE[1],prev_MLE[2],0.01))
+  one_run = function(p0) {
+    optim(
+      par      = p0,
+      fn       = negative_log_likelihood_profile,
+      obs1     = y_1,
+      T_2      = T_2,
+      noise_1  = noise_BG,
+      method   = "L-BFGS-B",
+      lower    = params_matrix[1, 1:3],
+      upper    = params_matrix[1, 4:6],
+      control  = list(
+        maxit    = 5000,
+        factr = 1e5,
+        parscale = abs(p0) + 1e-3    
+      )
+    )
+  }
+ 
+ 
+  res_list = map(starts, one_run)
+  best_idx  = which.min(map_dbl(res_list, "value"))
+  purrr::imap(res_list, function(res, idx) {
+  cat("Start", idx, "→ value =", res$value,
+      "  par =", paste(round(res$par, 6), collapse = ", "), "\n")
+})
+  optim_results_mle  = res_list[[best_idx]]
+  mle_params = optim_results_mle$par
+  cat("MLEs:", paste(mle_params, collapse = " | "), "\n")
+  if (!is.null(prev_opt)){
+  prev_pl = negative_log_likelihood_profile(
+  parameters = prev_opt,
+  obs1 = y_1,
+  T_2 = T_2,
+  noise_1 = noise_BG
+  )
+  }else
+  prev_pl = 1000
+  current_pl =negative_log_likelihood_profile(
+  parameters = mle_params,
+  obs1 = y_1,
+  T_2 = T_2,
+  noise_1 = noise_BG
+)
+  mle_params = if (current_pl<prev_pl) mle_params else prev_MLE
+  MLE_neglog = if (current_pl<prev_pl) current_pl else prev_pl
+
+  optimalestimates = as.numeric(c(mle_params[1], mle_params[2], mle_params[3]))
+  OE1 = optimalestimates[1]
+  OE2 = optimalestimates[2]
+  OE3 = optimalestimates[3]
+  
+  param_indices = 1:3
+  min_stepsize=c(0.1,1e-4,1e-2)
+  thresholds =compute_profile_likelihood(optimalestimates[1], c(optimalestimates[-1]), 1)$neglog_lik+qchisq(0.95, 1) / 2
+  id_check = unlist(lapply(param_indices, function(i) {
+  id_check_together(
+    f = compute_profile_likelihood,
+    MLE = get(paste0("OE", i)),  
+    tol = min_stepsize[i],          
+    initial_param = c(OE1, OE2, OE3)[-i],
+    LB = lowerbound[[i]],                
+    UB = upperbound[[i]],                
+    threshold = thresholds,             
+    prev_bound=as.numeric(prev_bound[i,1:2]),
+    fix_idx = i   
+  )
+  }) )
+  
+  cat("idcheckresult", id_check)
+  bounds = lapply(param_indices, function(i) {
+    bound_search_ci(
+      f = compute_profile_likelihood,
+      MLE = get(paste0("OE", i)),  
+      tol = min_stepsize[i],          
+      initial_param = c(OE1, OE2, OE3)[-i],
+      LB = lowerbound[[i]],                
+      UB = upperbound[[i]],    
+      id_indicator = id_check,
+      threshold = thresholds,             
+      prev_bound=as.numeric(prev_bound[i,1:2]), #for EALPIPE script previous bound is NULL
+      fix_idx = i,                          
+      max_iter = 50             #max iter for bound search, can be 30-100        
+    )
+  }) 
+  cat("Finish bound search \n")
+  bounds_df = bounds_df =do.call(rbind, lapply(bounds, function(x) {
+  as.data.frame(x[1:4])
+  }))
+  best_pl_values = sapply(bounds, function(x) x$best_pl)
+  min_best_pl_index = which.min(best_pl_values)
+  update_MLE = bounds[[min_best_pl_index]]$update_MLE
+  selected_T2 = sample(unique_T2, 1, replace = TRUE)
+  return(list(selected_T2, optimalestimates,id_check,current_model=NULL,bounds_df))
+}
+```
+
+Joint work: each trial
+```{r}
+iteration_func=function(seed,candidate_T2,iterations,num_points,noise_1=noise_BG){
+  cat("trial: ", seed)
+  set.seed(seed)
+  
+  estimate_df = list()
+  MAP_estimate_df = list()
+  estimate_df = list()
+  pid_df=list() 
+  bounds_df=list()
+  
+  num = num_points
+  index_list = 1:num
+  N = 20  # start with more points maybe
+  selected_T2 = c(10,sample(candidate_T2, N-1, replace = TRUE))
+  cat("Initial T2:",selected_T2,"\n")
+  contain_pairs = list()
+  for (i in 1:N) {
+    contain_pairs[[i]] = c(selected_T2[i])
+  }
+  repeat_count = update_repeat_dict(contain_pairs, list())
+  obs1=numeric(0)
+  for (idx in 1:length(contain_pairs)){
+    obs_generated = generate_obs(contain_pairs[[idx]],seed,repeat_count)
+    obs1 =c(obs1, as.numeric(obs_generated[1]))
+  }
+  y_1 = obs1
+
+  result_iter=update_functions_id(y_1[order(unlist(contain_pairs))],N,T_2=sort(unlist(contain_pairs),decreasing=FALSE),num_points)   
+  #with initial random observations
+  next_location = result_iter[[1]]
+  current_mle=result_iter[[2]]
+  id_check = result_iter [[3]]
+  current_model=result_iter[[4]]
+  current_bound=result_iter[[5]]
+  
+  estimate_df[[i]] = current_mle 
+  observations_df = data.frame(iteration = integer(), y1 = list()) 
+  i=0
+  id_label = 0
+  while (i < iterations) {
+    i = i + 1
+    N = N + 1
+    contain_pairs = c(contain_pairs, list(next_location))
+    repeat_count = update_repeat_dict(next_location, repeat_count)
+    obs1 = c(obs1, generate_obs(next_location, seed, repeat_count)[[1]])
+    cat("\n","obs1 is",obs1)
+    cat("contain_pairs:",T_2=unlist(contain_pairs),"\n")
+    y_1 = obs1
+    cat("enter iteration",i,"\n")
+    current_estimate =c(2, 0.2,  1)
+    current_estimate[id_check == 1] = current_mle[id_check == 1]
+    if(id_label < 2){
+    result_iter=update_functions_id(y_1[order(unlist(contain_pairs))],N,T_2=sort(unlist(contain_pairs),decreasing=FALSE),num_points,prev_MLE=current_estimate,prev_opt = current_mle,previous_model = current_model,prev_bound=current_bound) 
+    next_location = result_iter[[1]]
+    current_mle=result_iter[[2]]
+    id_check=result_iter[[3]]
+    current_model=result_iter[[4]]
+    }
+
+    #Stop when two iters get id
+    #if(sum(id_check)==3){
+    #  id_label = id_label+1
+    #}
+    #else{
+    #  id_label = 0
+    #}
+    #if no early stop
+    id_label = 0
+    
+    estimate_df[[i]] = current_mle
+    pid_df[[i]]=id_check
+    observations_df = rbind(observations_df, data.frame(iteration = i,y1 = I(list(y_1))))
+    bounds_df[[i]]=result_iter[[5]]
+  }
+  cat("Final contain:", unlist(contain_pairs), "\n")
+  return(list(estimate_df,pid_df,observations_df,contain_pairs,bounds_df))
+}
+
+```
+
+Trial function:
+```{r}
+
+trials = function(num_trials, iterations, time_length,noise_1=noise_BG){
+  trialseq = seq(1, num_trials)
+  T_2= seq(1, time_length, 0.5) 
+  estimated_params=list()
+  observations=list()
+  pl_check=list()
+  bounds=list()
+  obs_locations_df = data.frame(matrix(ncol = length(iterations+1), nrow = 0))
+  for (i in 1:length(trialseq)) {
+    cat("Start trial",i,"\n","\n","\n")
+ 
+    results=iteration_func(trialseq[i],T_2,iterations,time_length)
+    estimated_params[[i]]=results[1]
+    pl_check[[i]]=results[2]
+    observations[[i]]= results[3] #results 4 is dataframe, so a list of dataframe structure
+    row_df = as.data.frame(t(unlist(results[[4]])))
+    obs_locations_df=rbind(obs_locations_df, row_df)
+    bounds[[i]]=results[5]
+  }
+  milly = list(estimated_params,observations,obs_locations_df,pl_check,bounds)
+  save(milly, file = "random1DStop20.RData") 
+  return(list(estimated_params,observations,obs_locations_df,pl_check,bounds)) 
+}
+
+milly=trials(30,1,60) 
+
+```
+
